@@ -137,6 +137,7 @@ class TradingBot:
     async def _tick(self) -> None:
         assert self._exchange is not None
 
+        prices: dict[str, float] = {}
         for symbol in self._settings.symbols:
             try:
                 klines = await self._exchange.get_klines(symbol, limit=100)
@@ -148,6 +149,7 @@ class TradingBot:
             df = add_indicators(df)
             self._df = df
             self._ticker = symbol
+            prices[symbol] = df.iloc[-1]["close"]
 
             # --- Verificar saída de posição atual ---
             if self._position:
@@ -159,7 +161,7 @@ class TradingBot:
                 )
                 if exit_hit:
                     await self._close_position(df.iloc[-1]["close"])
-                    continue  # próxima iteração
+                    continue
 
             # --- Verificar entrada (squeeze → breakout) ---
             if not self._position:
@@ -167,15 +169,22 @@ class TradingBot:
                 if entry:
                     await self._open_position(entry, df)
 
-            # --- Atualizar bot_state ---
-            pos_label = "FLAT"
-            if self._position:
-                pos_label = self._position["side"]
-            self._db.upsert_bot_state({
-                "current_position": pos_label,
-                "last_squeeze_high": self._squeeze.high if self._squeeze.active else None,
-                "last_squeeze_low": self._squeeze.low if self._squeeze.active else None,
-            })
+        # --- Atualizar bot_state ---
+        pos_label = "FLAT"
+        if self._position:
+            pos_label = self._position["side"]
+        current_balance = None
+        try:
+            current_balance = await self._exchange.get_balance_usdt()
+        except Exception:
+            pass
+        self._db.upsert_bot_state({
+            "current_position": pos_label,
+            "last_squeeze_high": self._squeeze.high if self._squeeze.active else None,
+            "last_squeeze_low": self._squeeze.low if self._squeeze.active else None,
+            "current_prices": prices,
+            "current_balance": current_balance,
+        })
 
     # ------------------------------------------------------------------
     #  Posições
