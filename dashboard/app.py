@@ -192,7 +192,7 @@ def dashboard_page() -> None:
     # ── Linha 1: Status + Preços + Saldo ───────────────────────────────
     cols = st.columns([1.2, 1.5, 1.2, 0.8, 0.8, 0.8])
     with cols[0]:
-        st.markdown(f"**Status**  \n{_status_badge(status)}  \n🔄 `{label}`")
+        st.markdown(f"**Status**  \n{_status_badge(status)}  \n🔄 `{label}`", unsafe_allow_html=True)
     with cols[1]:
         for s in settings.symbols:
             p = prices.get(s)
