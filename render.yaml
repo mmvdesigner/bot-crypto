@@ -1,0 +1,53 @@
+# Render Blueprint — Bot Crypto
+# Dashboard:  https://dashboard.render.com/select-repo?type=web
+# Bot Worker: https://dashboard.render.com/select-repo?type=bg-worker
+
+services:
+  # ── Streamlit Dashboard ──────────────────────────────────────────
+  - type: web
+    name: bot-crypto-dashboard
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: streamlit run dashboard/app.py --server.port $PORT --server.address 0.0.0.0
+    healthCheckPath: /_stcore/health
+    envVars:
+      - key: SUPABASE_URL
+        sync: false    # preencher no dashboard do Render
+      - key: SUPABASE_ANON_KEY
+        sync: false
+      - key: SUPABASE_SERVICE_KEY
+        sync: false
+      - key: BINANCE_API_KEY
+        sync: false
+      - key: BINANCE_SECRET_KEY
+        sync: false
+      - key: BINANCE_TESTNET
+        value: "true"
+      - key: TRADE_MODE
+        value: "paper"
+      - key: SYMBOLS
+        value: "BTCUSDT,BNBUSD"
+
+  # ── Bot Background Worker ────────────────────────────────────────
+  - type: worker
+    name: bot-crypto-worker
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python -m src.main
+    envVars:
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_ANON_KEY
+        sync: false
+      - key: SUPABASE_SERVICE_KEY
+        sync: false
+      - key: BINANCE_API_KEY
+        sync: false
+      - key: BINANCE_SECRET_KEY
+        sync: false
+      - key: BINANCE_TESTNET
+        value: "true"
+      - key: TRADE_MODE
+        value: "paper"
+      - key: SYMBOLS
+        value: "BTCUSDT,BNBUSD"

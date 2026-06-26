@@ -1,0 +1,35 @@
+[Unit]
+Description=Bot Crypto — Expansão de Volume (Binance Futures)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=bot
+Group=bot
+WorkingDirectory=/opt/bot-crypto
+
+# Ambiente carregado do .env
+EnvironmentFile=/opt/bot-crypto/.env
+
+# Caminho completo do interpretador do venv
+ExecStart=/opt/bot-crypto/venv/bin/python -m src.main
+
+# Reinicialização automática
+Restart=always
+RestartSec=15
+
+# Proteções de segurança
+ProtectHome=yes
+PrivateTmp=yes
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+ProtectSystem=strict
+ReadWritePaths=/opt/bot-crypto
+
+# Logs
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
