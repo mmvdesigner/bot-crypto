@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import sys
+import threading
 
 import pandas as pd
 import streamlit as st
@@ -33,6 +35,36 @@ if "db" not in st.session_state:
     st.session_state.db = SupabaseDB()
 if "page" not in st.session_state:
     st.session_state.page = "login"
+
+# ---------------------------------------------------------------------------
+#  Gambiarra: rodar o bot numa thread separada junto com o dashboard
+# ---------------------------------------------------------------------------
+
+def _start_bot_in_background() -> None:
+    """Inicia o TradingBot em background. Chamado uma única vez via cache."""
+    from src.main import TradingBot
+
+    async def _run() -> None:
+        bot = TradingBot()
+        await bot.run()
+
+    def _target() -> None:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            loop.run_until_complete(_run())
+        except Exception:
+            logger.exception("Bot thread morreu")
+
+    t = threading.Thread(target=_target, daemon=True, name="bot-thread")
+    t.start()
+    logger.info("Bot thread iniciada")
+
+@st.cache_resource
+def _ensure_bot_running() -> None:
+    _start_bot_in_background()
+
+_ensure_bot_running()
 
 
 def login_page() -> None:
