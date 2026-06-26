@@ -7,6 +7,9 @@ import sys
 import threading
 from datetime import datetime, timezone
 
+import hashlib
+import hmac
+
 import httpx
 import pandas as pd
 import streamlit as st
@@ -148,6 +151,44 @@ def _fetch_current_prices(symbols: tuple[str, ...]) -> dict[str, float]:
         return result
 
 
+_BALANCE_CACHE: dict = {}
+_BALANCE_LOCK = threading.Lock()
+
+
+def _fetch_testnet_balance() -> float | None:
+    with _BALANCE_LOCK:
+        cached = _BALANCE_CACHE.get("balance")
+        if cached and (datetime.now(timezone.utc) - cached["ts"]).total_seconds() < 120:
+            return cached["value"]
+        try:
+            settings = get_settings()
+            key = settings.binance_api_key
+            secret = settings.binance_secret_key
+            base = settings.binance_base_url
+            if not key or not secret:
+                return None
+            params = {"recvWindow": 5000, "timestamp": int(time.time() * 1000)}
+            q = "&".join(f"{k}={v}" for k, v in sorted(params.items()))
+            sig = hmac.new(secret.encode(), q.encode(), hashlib.sha256).hexdigest()
+            params["signature"] = sig
+            r = httpx.get(
+                f"{base}/fapi/v2/account",
+                params=params,
+                headers={"X-MBX-APIKEY": key},
+                timeout=10,
+            )
+            if r.status_code == 200:
+                assets = r.json().get("assets", [])
+                for a in assets:
+                    if a["asset"] == "USDT":
+                        val = float(a["walletBalance"])
+                        _BALANCE_CACHE["balance"] = {"value": val, "ts": datetime.now(timezone.utc)}
+                        return val
+        except Exception:
+            pass
+        return None
+
+
 # ---------------------------------------------------------------------------
 #  Dashboard
 # ---------------------------------------------------------------------------
@@ -179,6 +220,11 @@ def dashboard_page() -> None:
     position = state.get("current_position", "FLAT")
     prices = _fetch_current_prices(settings.symbols)
 
+    # Saldo: tenta da testnet primeiro, fallback pro bot_state
+    bal = _fetch_testnet_balance()
+    if bal is None:
+        bal = state.get("current_balance")
+
     updated_at = state.get("updated_at") or state.get("last_update")
     if updated_at:
         try:
@@ -198,7 +244,6 @@ def dashboard_page() -> None:
             p = prices.get(s)
             st.markdown(f"**{s}**  \n`${p:,.2f}`" if p else f"**{s}**  \n—")
     with cols[2]:
-        bal = state.get("current_balance")
         bal_str = f"${bal:,.2f}" if bal else "—"
         st.markdown(f"**Saldo**  \n`{bal_str}`  \n{'(simulado)' if not settings.is_live else ''}")
     with cols[3]:
