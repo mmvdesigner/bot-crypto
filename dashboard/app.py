@@ -155,18 +155,23 @@ _BALANCE_CACHE: dict = {}
 _BALANCE_LOCK = threading.Lock()
 
 
-def _fetch_testnet_balance() -> float | None:
+def _fetch_testnet_balance() -> tuple[float | None, str | None]:
     with _BALANCE_LOCK:
         cached = _BALANCE_CACHE.get("balance")
         if cached and (datetime.now(timezone.utc) - cached["ts"]).total_seconds() < 120:
-            return cached["value"]
+            return cached["value"], None
+        error: str | None = None
         try:
             settings = get_settings()
             key = settings.binance_api_key
             secret = settings.binance_secret_key
             base = settings.binance_base_url
             if not key or not secret:
-                return None
+                error = "BINANCE_API_KEY ou BINANCE_SECRET_KEY vazias"
+                _BALANCE_CACHE["balance"] = {"value": None, "ts": datetime.now(timezone.utc)}
+                return None, error
+            if not key.startswith("L"):
+                error = f"Chave parece inválida (começa com {key[:2]}...)"
             params = {"recvWindow": 5000, "timestamp": int(time.time() * 1000)}
             q = "&".join(f"{k}={v}" for k, v in sorted(params.items()))
             sig = hmac.new(secret.encode(), q.encode(), hashlib.sha256).hexdigest()
@@ -183,10 +188,14 @@ def _fetch_testnet_balance() -> float | None:
                     if a["asset"] == "USDT":
                         val = float(a["walletBalance"])
                         _BALANCE_CACHE["balance"] = {"value": val, "ts": datetime.now(timezone.utc)}
-                        return val
-        except Exception:
-            pass
-        return None
+                        return val, None
+                error = "Asset USDT não encontrado na conta"
+            else:
+                error = f"Testnet HTTP {r.status_code}: {r.text[:120]}"
+        except Exception as e:
+            error = f"Exceção: {e}"
+        _BALANCE_CACHE["balance"] = {"value": None, "ts": datetime.now(timezone.utc)}
+        return None, error
 
 
 # ---------------------------------------------------------------------------
@@ -221,7 +230,7 @@ def dashboard_page() -> None:
     prices = _fetch_current_prices(settings.symbols)
 
     # Saldo: tenta da testnet primeiro, fallback pro bot_state
-    bal = _fetch_testnet_balance()
+    bal, bal_error = _fetch_testnet_balance()
     if bal is None:
         bal = state.get("current_balance")
 
@@ -245,7 +254,12 @@ def dashboard_page() -> None:
             st.markdown(f"**{s}**  \n`${p:,.2f}`" if p else f"**{s}**  \n—")
     with cols[2]:
         bal_str = f"${bal:,.2f}" if bal else "—"
-        st.markdown(f"**Saldo**  \n`{bal_str}`  \n{'(simulado)' if not settings.is_live else ''}")
+        bal_note = ""
+        if not bal and bal_error:
+            bal_note = f"⚠️ {bal_error[:50]}"
+        elif not settings.is_live:
+            bal_note = "(simulado)" if bal else ""
+        st.markdown(f"**Saldo**  \n`{bal_str}`  \n{bal_note}")
     with cols[3]:
         st.markdown(f"**Posição**  \n`{position}`")
     with cols[4]:
