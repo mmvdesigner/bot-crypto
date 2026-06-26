@@ -221,6 +221,13 @@ def dashboard_page() -> None:
     settings = get_settings()
     mode = "🔴 LIVE" if settings.is_live else "🟢 PAPER"
 
+    # Auto-refresh a cada 15s
+    if "last_refresh" not in st.session_state:
+        st.session_state.last_refresh = time.time()
+    if time.time() - st.session_state.last_refresh > 15:
+        st.session_state.last_refresh = time.time()
+        st.rerun()
+
     # ── Header ──────────────────────────────────────────────────────────
     st.markdown(f"# 🤖 Bot Crypto  ·  `{mode}`")
     st.caption(f"{', '.join(settings.symbols)} · 15m · volume_expansion")

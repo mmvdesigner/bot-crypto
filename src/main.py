@@ -78,7 +78,7 @@ class TradingBot:
         self._running = False
         self._ticker: Optional[str] = None
         self._df: Optional[pd.DataFrame] = None
-        self._squeeze = SqueezeTracker()
+        self._squeeze: dict[str, SqueezeTracker] = {}
         self._position: Optional[Dict[str, Any]] = None  # trade ativo
 
     # ------------------------------------------------------------------
@@ -165,7 +165,8 @@ class TradingBot:
 
             # --- Verificar entrada (squeeze → breakout) ---
             if not self._position:
-                entry = self._squeeze.update(df)
+                sq = self._squeeze.setdefault(symbol, SqueezeTracker())
+                entry = sq.update(df)
                 if entry:
                     await self._open_position(entry, df)
 
@@ -173,17 +174,28 @@ class TradingBot:
         pos_label = "FLAT"
         if self._position:
             pos_label = self._position["side"]
+
+        # Último squeeze ativo (qualquer símbolo)
+        last_sh: float | None = None
+        last_sl: float | None = None
+        for sq in self._squeeze.values():
+            if sq.active:
+                last_sh = sq.high
+                last_sl = sq.low
+
         current_balance = None
         try:
             current_balance = await self._exchange.get_balance_usdt()
         except Exception:
             pass
+
         self._db.upsert_bot_state({
             "current_position": pos_label,
-            "last_squeeze_high": self._squeeze.high if self._squeeze.active else None,
-            "last_squeeze_low": self._squeeze.low if self._squeeze.active else None,
+            "last_squeeze_high": last_sh if last_sh else None,
+            "last_squeeze_low": last_sl if last_sl else None,
             "current_prices": prices,
             "current_balance": current_balance,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
         })
 
     # ------------------------------------------------------------------
