@@ -33,22 +33,20 @@ class SqueezeTracker:
         self.high: float = 0.0
         self.low: float = 0.0
         self.active: bool = False
-        self._prev_squeeze_high: Optional[float] = None
-        self._prev_squeeze_low: Optional[float] = None
 
     def update(self, df: pd.DataFrame) -> Optional[Dict[str, Any]]:
-        """Chamado a cada candle fechado. Detecta squeeze e prepara breakout."""
+        """Testa breakout se estamos numa squeeze; detecta novas squeezes."""
         if len(df) < SQUEEZE_LOOKBACK + 2:
             return
 
         squeeze_now = detect_squeeze(df["atr"])
         last = df.iloc[-1]
 
-        # --- Se o candle ANTERIOR era squeeze, testar breakout agora ---
+        # --- Se estamos numa squeeze, testar breakout ---
         if self.active:
-            self.active = False
             signal, price = check_entry(df, self.high, self.low)
             if signal and price:
+                self.active = False
                 atr_val = last["atr"]
                 sl, tp = calculate_sl_tp(price, atr_val, signal)
                 return {
@@ -61,7 +59,7 @@ class SqueezeTracker:
                     "squeeze_low": self.low,
                 }
 
-        # --- Se este candle é squeeze, guardar para o próximo ---
+        # --- Se este candle é squeeze, guardar/atualizar nível ---
         if squeeze_now:
             self.active = True
             self.high = last["high"]
