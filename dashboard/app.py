@@ -34,8 +34,13 @@ st.set_page_config(
 #  Sessão
 # ---------------------------------------------------------------------------
 
+@st.cache_resource
+def _get_cached_db() -> SupabaseDB:
+    """Retorna o mesmo SupabaseDB entre refreshes (preserva sessão)."""
+    return SupabaseDB()
+
 if "db" not in st.session_state:
-    st.session_state.db = SupabaseDB()
+    st.session_state.db = _get_cached_db()
 if "page" not in st.session_state:
     st.session_state.page = "login"
 
