@@ -56,16 +56,23 @@ def _start_bot_in_background() -> None:
         await bot.run()
 
     def _target() -> None:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        try:
-            loop.run_until_complete(_run())
-        except Exception:
-            logger.exception("Bot thread morreu")
+        restart_delay = 10
+        max_delay = 300
+        while True:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                loop.run_until_complete(_run())
+                logger.info("Bot terminou normalmente")
+                break  # Saída limpa, não reiniciar
+            except Exception:
+                logger.exception("Bot thread morreu — reiniciando em %ds", restart_delay)
+                time.sleep(restart_delay)
+                restart_delay = min(restart_delay * 2, max_delay)
 
     t = threading.Thread(target=_target, daemon=True, name="bot-thread")
     t.start()
-    logger.info("Bot thread iniciada")
+    logger.info("Bot thread iniciada (com auto-restart)")
 
 
 def _start_keepalive() -> None:

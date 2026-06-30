@@ -88,13 +88,19 @@ def calculate_sl_tp(
 def check_exit(
     side: str,
     entry_price: float,
-    current_price: float,
+    current_high: float,
+    current_low: float,
     entry_atr: float,
 ) -> bool:
-    """True se o preço atual atingiu SL ou TP."""
+    """
+    True se o preço atual atingiu SL ou TP.
+
+    Usa high/low (não close) para detectar wicks que atingem SL/TP,
+    igual ao PineScript strategy.exit().
+    """
     sl, tp = calculate_sl_tp(entry_price, entry_atr, side)
 
     if side == "LONG":
-        return current_price <= sl or current_price >= tp
+        return current_low <= sl or current_high >= tp
     else:
-        return current_price >= sl or current_price <= tp
+        return current_high >= sl or current_low <= tp

@@ -86,16 +86,18 @@ def test_sl_tp_short():
 
 
 def test_exit_long():
-    assert check_exit("LONG", 50000, 49760, 200) is True   # SL hit
-    assert check_exit("LONG", 50000, 50601, 200) is True    # TP hit
-    assert check_exit("LONG", 50000, 50200, 200) is False   # no exit
+    # check_exit(side, entry_price, current_high, current_low, entry_atr)
+    assert check_exit("LONG", 50000, 50000, 49760, 200) is True   # SL hit (low <= sl)
+    assert check_exit("LONG", 50000, 50601, 50000, 200) is True   # TP hit (high >= tp)
+    assert check_exit("LONG", 50000, 50200, 49900, 200) is False  # no exit
     print("✓ test_exit_long")
 
 
 def test_exit_short():
-    assert check_exit("SHORT", 50000, 50240, 200) is True   # SL
-    assert check_exit("SHORT", 50000, 49399, 200) is True    # TP
-    assert check_exit("SHORT", 50000, 49800, 200) is False   # no exit
+    # check_exit(side, entry_price, current_high, current_low, entry_atr)
+    assert check_exit("SHORT", 50000, 50240, 50000, 200) is True   # SL (high >= sl)
+    assert check_exit("SHORT", 50000, 50000, 49399, 200) is True   # TP (low <= tp)
+    assert check_exit("SHORT", 50000, 50100, 49800, 200) is False  # no exit
     print("✓ test_exit_short")
 
 

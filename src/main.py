@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import signal
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
@@ -26,18 +27,30 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 SQUEEZE_LOOKBACK = 20
+TICK_INTERVAL = 10  # segundos entre cada polling
+ERROR_COOLDOWN = 60  # segundos após erro antes de tentar novamente
+
+# Step sizes por símbolo (Binance Futures)
+# TODO: buscar dinamicamente via /fapi/v1/exchangeInfo
+STEP_SIZES: dict[str, float] = {
+    "BTCUSDT": 0.001,
+    "BNBUSD": 0.01,
+    "ETHUSDT": 0.001,
+    "BNBUSDT": 0.01,
+}
+DEFAULT_STEP_SIZE = 0.001
 
 
 class SqueezeTracker:
     def __init__(self) -> None:
         self.high: float = 0.0
-        self.low: float = 0.0
+        self.low: float = float("inf")
         self.active: bool = False
 
     def update(self, df: pd.DataFrame) -> Optional[Dict[str, Any]]:
         """Testa breakout se estamos numa squeeze; detecta novas squeezes."""
         if len(df) < SQUEEZE_LOOKBACK + 2:
-            return
+            return None
 
         squeeze_now = detect_squeeze(df["atr"])
         last = df.iloc[-1]
@@ -46,7 +59,14 @@ class SqueezeTracker:
         if self.active:
             signal, price = check_entry(df, self.high, self.low)
             if signal and price:
+                logger.info(
+                    "BREAKOUT detectado! signal=%s price=%.2f "
+                    "squeeze_high=%.2f squeeze_low=%.2f",
+                    signal, price, self.high, self.low,
+                )
                 self.active = False
+                self.high = 0.0
+                self.low = float("inf")
                 atr_val = last["atr"]
                 sl, tp = calculate_sl_tp(price, atr_val, signal)
                 return {
@@ -61,9 +81,25 @@ class SqueezeTracker:
 
         # --- Se este candle é squeeze, guardar/atualizar nível ---
         if squeeze_now:
-            self.active = True
-            self.high = last["high"]
-            self.low = last["low"]
+            if not self.active:
+                # Primeiro candle de squeeze — inicializar
+                self.active = True
+                self.high = last["high"]
+                self.low = last["low"]
+                logger.info(
+                    "SQUEEZE detectado! high=%.2f low=%.2f atr=%.4f",
+                    self.high, self.low, last["atr"],
+                )
+            else:
+                # Squeeze contínuo — expandir o range
+                old_h, old_l = self.high, self.low
+                self.high = max(self.high, last["high"])
+                self.low = min(self.low, last["low"])
+                if self.high != old_h or self.low != old_l:
+                    logger.info(
+                        "SQUEEZE expandido: high=%.2f→%.2f low=%.2f→%.2f",
+                        old_h, self.high, old_l, self.low,
+                    )
 
         return None
 
@@ -77,14 +113,18 @@ class TradingBot:
         self._ticker: Optional[str] = None
         self._df: Optional[pd.DataFrame] = None
         self._squeeze: dict[str, SqueezeTracker] = {}
-        self._position: Optional[Dict[str, Any]] = None  # trade ativo
+        # Posições isoladas por símbolo
+        self._positions: dict[str, Dict[str, Any]] = {}
+        # Tracking de candles processados (evitar reprocessar mesmo candle)
+        self._last_candle_ts: dict[str, int] = {}
 
     # ------------------------------------------------------------------
     #  Loops
     # ------------------------------------------------------------------
 
     async def run(self) -> None:
-        logger.info("Iniciando bot (mode=%s)", self._settings.trade_mode)
+        logger.info("Iniciando bot (mode=%s, symbols=%s)",
+                     self._settings.trade_mode, self._settings.symbols)
 
         self._exchange = BinanceFutures()
         self._running = True
@@ -114,23 +154,30 @@ class TradingBot:
                 status = (state or {}).get("status", "STOPPED")
 
                 if status != "RUNNING":
-                    logger.info("Bot %s. Aguardando 10s...", status)
+                    logger.info("Bot %s. Aguardando %ds...", status, TICK_INTERVAL)
                     self._db.upsert_bot_state({
                         "current_position": "FLAT",
                         "last_squeeze_high": None,
                         "last_squeeze_low": None,
-                    } if not self._position else {
-                        "current_position": "FLAT",
                     })
-                    await asyncio.sleep(10)
+                    await asyncio.sleep(TICK_INTERVAL)
                     continue
 
                 await self._tick()
 
             except Exception as e:
                 logger.error("Erro no loop principal: %s", e, exc_info=True)
-                self._db.upsert_bot_state({"status": "ERROR"})
-                await asyncio.sleep(30)
+                # NÃO travar em ERROR — auto-recover após cooldown
+                logger.info("Auto-recovery em %ds...", ERROR_COOLDOWN)
+                try:
+                    self._db.upsert_bot_state({"status": "RUNNING"})
+                except Exception:
+                    pass
+                await asyncio.sleep(ERROR_COOLDOWN)
+                continue
+
+            # CRÍTICO: sleep entre ticks para não bombardear a API
+            await asyncio.sleep(TICK_INTERVAL)
 
     async def _tick(self) -> None:
         assert self._exchange is not None
@@ -143,35 +190,61 @@ class TradingBot:
                 logger.warning("Falha ao buscar klines %s: %s", symbol, e)
                 continue
 
-            df = self._klines_to_df(klines)
-            df = add_indicators(df)
-            self._df = df
-            self._ticker = symbol
-            prices[symbol] = df.iloc[-1]["close"]
+            df_full = self._klines_to_df(klines)
+            df_full = add_indicators(df_full)
 
-            # --- Verificar saída de posição atual ---
-            if self._position:
+            # Separar candles completos vs candle em formação
+            # PineScript opera no close da barra — usar apenas candles fechados
+            # para decisões de entrada. O candle em formação é usado para exit.
+            if len(df_full) < 2:
+                continue
+
+            df_closed = df_full.iloc[:-1]  # Apenas candles completos
+            forming = df_full.iloc[-1]     # Candle atual (em formação)
+            prices[symbol] = float(forming["close"])
+
+            self._df = df_full
+            self._ticker = symbol
+
+            # Verificar se temos um NOVO candle fechado (evitar reprocessar)
+            last_closed_ts = int(df_closed.iloc[-1]["timestamp"].timestamp())
+            prev_ts = self._last_candle_ts.get(symbol, 0)
+
+            # --- Verificar saída de posição (usa candle em formação) ---
+            pos = self._positions.get(symbol)
+            if pos:
                 exit_hit = check_exit(
-                    side=self._position["side"],
-                    entry_price=self._position["entry_price"],
-                    current_price=df.iloc[-1]["close"],
-                    entry_atr=self._position["entry_atr"],
+                    side=pos["side"],
+                    entry_price=pos["entry_price"],
+                    current_high=float(forming["high"]),
+                    current_low=float(forming["low"]),
+                    entry_atr=pos["entry_atr"],
                 )
                 if exit_hit:
-                    await self._close_position(df.iloc[-1]["close"])
+                    await self._close_position(symbol, float(forming["close"]))
                     continue
 
-            # --- Verificar entrada (squeeze → breakout) ---
-            if not self._position:
+            # --- Verificar entrada apenas em NOVOS candles fechados ---
+            if last_closed_ts == prev_ts:
+                # Mesmo candle, já processado para entrada
+                continue
+
+            self._last_candle_ts[symbol] = last_closed_ts
+
+            if symbol not in self._positions:
                 sq = self._squeeze.setdefault(symbol, SqueezeTracker())
-                entry = sq.update(df)
+                entry = sq.update(df_closed)
                 if entry:
-                    await self._open_position(entry, df)
+                    await self._open_position(symbol, entry, df_closed)
 
         # --- Atualizar bot_state ---
-        pos_label = "FLAT"
-        if self._position:
-            pos_label = self._position["side"]
+        # Manter compatibilidade com CHECK constraint (FLAT/LONG/SHORT)
+        if not self._positions:
+            pos_label = "FLAT"
+        else:
+            # Usar o side da primeira posição (constraint do schema)
+            first_pos = next(iter(self._positions.values()))
+            pos_label = first_pos["side"]
 
         # Último squeeze ativo (qualquer símbolo)
         last_sh: float | None = None
@@ -200,7 +273,9 @@ class TradingBot:
     #  Posições
     # ------------------------------------------------------------------
 
-    async def _open_position(self, entry: Dict[str, Any], df: pd.DataFrame) -> None:
+    async def _open_position(
+        self, symbol: str, entry: Dict[str, Any], df: pd.DataFrame
+    ) -> None:
         assert self._exchange is not None
 
         side = entry["signal"]
@@ -209,8 +284,10 @@ class TradingBot:
         tp = entry["tp"]
         atr_val = entry["atr"]
 
-        logger.info("=== ENTRADA %s %s price=%.2f sl=%.2f tp=%.2f atr=%.2f ===",
-                     self._ticker, side, price, sl, tp, atr_val)
+        logger.info(
+            "=== ENTRADA %s %s price=%.2f sl=%.2f tp=%.2f atr=%.2f ===",
+            symbol, side, price, sl, tp, atr_val,
+        )
 
         # Calcular quantidade (1% do saldo / distância do SL)
         try:
@@ -220,12 +297,23 @@ class TradingBot:
 
         risk_amount = balance * 0.01
         price_dist = abs(price - sl)
-        amount = risk_amount / price_dist if price_dist > 0 else 0.001
+        if price_dist <= 0:
+            logger.warning("Distância SL é zero, abortando entrada")
+            return
+
+        amount = risk_amount / price_dist
+
+        # Arredondar para step_size do símbolo
+        step = STEP_SIZES.get(symbol.upper(), DEFAULT_STEP_SIZE)
+        amount = math.floor(amount / step) * step
+        if amount <= 0:
+            logger.warning("Quantidade calculada é zero após arredondamento")
+            return
 
         if self._settings.is_live:
             try:
                 order = await self._exchange.place_order(
-                    symbol=self._ticker,
+                    symbol=symbol,
                     side="BUY" if side == "LONG" else "SELL",
                     order_type="MARKET",
                     quantity=amount,
@@ -234,9 +322,12 @@ class TradingBot:
                 exec_qty = float(order.get("executedQty", amount))
                 logger.info("Ordem executada: %s", order)
 
-                # Enviar SL/TP como stop loss / take profit market
+                # Recalcular SL/TP com preço real de execução
+                sl, tp = calculate_sl_tp(exec_price, atr_val, side)
+
+                # Enviar SL/TP como ordens na exchange
                 await self._exchange.place_order(
-                    symbol=self._ticker,
+                    symbol=symbol,
                     side="SELL" if side == "LONG" else "BUY",
                     order_type="STOP_MARKET",
                     quantity=exec_qty,
@@ -244,7 +335,7 @@ class TradingBot:
                     reduce_only=True,
                 )
                 await self._exchange.place_order(
-                    symbol=self._ticker,
+                    symbol=symbol,
                     side="SELL" if side == "LONG" else "BUY",
                     order_type="TAKE_PROFIT_MARKET",
                     quantity=exec_qty,
@@ -255,7 +346,7 @@ class TradingBot:
                 logger.error("Falha ordem %s: %s", side, e)
                 return
 
-            self._position = {
+            self._positions[symbol] = {
                 "side": side,
                 "entry_price": exec_price,
                 "amount": exec_qty,
@@ -263,7 +354,7 @@ class TradingBot:
             }
         else:
             # Paper mode
-            self._position = {
+            self._positions[symbol] = {
                 "side": side,
                 "entry_price": price,
                 "amount": amount,
@@ -272,33 +363,35 @@ class TradingBot:
 
         trade_id = self._db.open_trade(
             side=side,
-            entry_price=self._position["entry_price"],
-            amount=self._position["amount"],
+            entry_price=self._positions[symbol]["entry_price"],
+            amount=self._positions[symbol]["amount"],
         )
-        self._position["trade_id"] = trade_id
+        self._positions[symbol]["trade_id"] = trade_id
 
-    async def _close_position(self, exit_price: float) -> None:
+    async def _close_position(self, symbol: str, exit_price: float) -> None:
         assert self._exchange is not None
 
-        if not self._position:
+        pos = self._positions.get(symbol)
+        if not pos:
             return
 
-        side = self._position["side"]
-        entry = self._position["entry_price"]
-        amount = self._position["amount"]
+        side = pos["side"]
+        entry = pos["entry_price"]
+        amount = pos["amount"]
 
         if side == "LONG":
             pnl = (exit_price - entry) * amount
         else:
             pnl = (entry - exit_price) * amount
 
-        logger.info("=== SAÍDA %s pnl=%.2f exit=%.2f ===", self._ticker, pnl, exit_price)
+        logger.info("=== SAÍDA %s %s pnl=%.2f exit=%.2f ===", symbol, side, pnl, exit_price)
 
         if self._settings.is_live:
             try:
-                await self._exchange.cancel_all(self._ticker)
+                # Cancelar ordens pendentes (SL/TP espelho)
+                await self._exchange.cancel_all(symbol)
                 await self._exchange.place_order(
-                    symbol=self._ticker,
+                    symbol=symbol,
                     side="SELL" if side == "LONG" else "BUY",
                     order_type="MARKET",
                     quantity=amount,
@@ -307,11 +400,11 @@ class TradingBot:
             except Exception as e:
                 logger.error("Falha ao fechar posição: %s", e)
 
-        trade_id = self._position.get("trade_id")
+        trade_id = pos.get("trade_id")
         if trade_id:
             self._db.close_trade(trade_id, exit_price, pnl)
 
-        self._position = None
+        del self._positions[symbol]
 
     # ------------------------------------------------------------------
     #  Utilitários
@@ -333,11 +426,12 @@ class TradingBot:
 
     async def _shutdown(self) -> None:
         logger.info("Shutdown...")
-        if self._position and self._settings.is_live:
-            try:
-                await self._exchange.cancel_all(self._ticker)  # type: ignore[arg-type]
-            except Exception:
-                pass
+        if self._settings.is_live:
+            for symbol in list(self._positions.keys()):
+                try:
+                    await self._exchange.cancel_all(symbol)
+                except Exception:
+                    pass
         if self._exchange:
             await self._exchange.close()
         logger.info("Bot parado.")
