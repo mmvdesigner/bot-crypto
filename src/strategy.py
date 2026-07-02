@@ -19,22 +19,21 @@ TP_ATR_MULT = 3.0
 
 
 def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
-    """Adiciona as colunas ATR e Volume SMA ao DataFrame."""
+    """Adiciona as colunas ATR, Volume SMA e is_squeeze ao DataFrame."""
     df = df.copy()
     df["atr"] = atr(df, ATR_PERIOD)
     df["volume_sma"] = volume_sma(df, VOLUME_SMA_PERIOD)
+    df["is_squeeze"] = detect_squeeze(df["atr"], SQUEEZE_LOOKBACK)
     return df
 
 
-def detect_squeeze(atr_series: pd.Series, lookback: int = SQUEEZE_LOOKBACK) -> bool:
+def detect_squeeze(atr_series: pd.Series, lookback: int = SQUEEZE_LOOKBACK) -> pd.Series:
     """
-    Retorna True se o último ATR for o menor (com tolerância de 2%)
-    dentre os últimos `lookback` períodos.
+    Retorna uma Series booleana indicando se o ATR atual é o menor dos últimos lookback períodos.
+    Equivale a `atr == ta.lowest(atr, 20)` no Pine Script.
     """
-    if len(atr_series) < lookback:
-        return False
-    recent = atr_series.iloc[-lookback:]
-    return atr_series.iloc[-1] <= SQUEEZE_TOLERANCE * recent.min()
+    lowest_atr = atr_series.rolling(window=lookback, min_periods=lookback).min()
+    return atr_series == lowest_atr
 
 
 def check_entry(

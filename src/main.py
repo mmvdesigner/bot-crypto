@@ -48,14 +48,19 @@ class SqueezeTracker:
         self.active: bool = False
 
     def update(self, df: pd.DataFrame) -> Optional[Dict[str, Any]]:
-        """Testa breakout se estamos numa squeeze; detecta novas squeezes."""
+        """
+        Segue a lógica do Pine Script:
+        Verifica se a barra anterior (df.iloc[-2]) foi um squeeze e se a barra atual (df.iloc[-1])
+        realiza o breakout.
+        """
         if len(df) < SQUEEZE_LOOKBACK + 2:
             return None
 
-        squeeze_now = detect_squeeze(df["atr"])
+        # O df["is_squeeze"] foi calculado na barra add_indicators
+        squeeze_now = bool(df["is_squeeze"].iloc[-1])
         last = df.iloc[-1]
 
-        # --- Se estamos numa squeeze, testar breakout ---
+        # --- Se estamos numa squeeze (ou seja, a barra anterior foi squeeze), testar breakout ---
         if self.active:
             signal, price = check_entry(df, self.high, self.low)
             if signal and price:
@@ -64,6 +69,7 @@ class SqueezeTracker:
                     "squeeze_high=%.2f squeeze_low=%.2f",
                     signal, price, self.high, self.low,
                 )
+                sh_temp, sl_temp = self.high, self.low
                 self.active = False
                 self.high = 0.0
                 self.low = float("inf")
@@ -75,31 +81,22 @@ class SqueezeTracker:
                     "atr": atr_val,
                     "sl": sl,
                     "tp": tp,
-                    "squeeze_high": self.high,
-                    "squeeze_low": self.low,
+                    "squeeze_high": sh_temp,
+                    "squeeze_low": sl_temp,
                 }
-
-        # --- Se este candle é squeeze, guardar/atualizar nível ---
-        if squeeze_now:
-            if not self.active:
-                # Primeiro candle de squeeze — inicializar
-                self.active = True
-                self.high = last["high"]
-                self.low = last["low"]
-                logger.info(
-                    "SQUEEZE detectado! high=%.2f low=%.2f atr=%.4f",
-                    self.high, self.low, last["atr"],
-                )
             else:
-                # Squeeze contínuo — expandir o range
-                old_h, old_l = self.high, self.low
-                self.high = max(self.high, last["high"])
-                self.low = min(self.low, last["low"])
-                if self.high != old_h or self.low != old_l:
-                    logger.info(
-                        "SQUEEZE expandido: high=%.2f→%.2f low=%.2f→%.2f",
-                        old_h, self.high, old_l, self.low,
-                    )
+                # O squeeze expirou pois o breakout do Pine Script exige entrada imediata
+                self.active = False
+
+        # --- Se este candle é squeeze, guardar nível para o próximo candle ---
+        if squeeze_now:
+            self.active = True
+            self.high = float(last["high"])
+            self.low = float(last["low"])
+            logger.info(
+                "SQUEEZE detectado! high=%.2f low=%.2f atr=%.4f",
+                self.high, self.low, last["atr"],
+            )
 
         return None
 

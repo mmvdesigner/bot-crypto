@@ -48,7 +48,7 @@ def test_squeeze_detected():
     lows = [49900.0] * 70 + [49980.0]
     df = make_df(closes, highs=highs, lows=lows)
     df = add_indicators(df)
-    assert detect_squeeze(df["atr"]), "Squeeze deve ser detectado"
+    assert df["is_squeeze"].iloc[-1], "Squeeze deve ser detectado"
     print("✓ test_squeeze_detected")
 
 
@@ -62,7 +62,7 @@ def test_long_breakout():
     df = make_df(closes, highs=highs, lows=lows, volumes=volumes)
     df = add_indicators(df)
 
-    assert detect_squeeze(df["atr"].iloc[:-1]), "Penúltima barra é squeeze"
+    assert df["is_squeeze"].iloc[-2], "Penúltima barra é squeeze"
 
     signal, price = check_entry(df, squeeze_high=50020, squeeze_low=49980)
     assert signal == "LONG", f"Esperado LONG, obtido {signal}"
