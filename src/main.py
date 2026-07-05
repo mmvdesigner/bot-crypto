@@ -41,66 +41,6 @@ STEP_SIZES: dict[str, float] = {
 DEFAULT_STEP_SIZE = 0.001
 
 
-class SqueezeTracker:
-    def __init__(self) -> None:
-        self.high: float = 0.0
-        self.low: float = float("inf")
-        self.active: bool = False
-
-    def update(self, df: pd.DataFrame) -> Optional[Dict[str, Any]]:
-        """
-        Segue a lógica do Pine Script:
-        Verifica se a barra anterior (df.iloc[-2]) foi um squeeze e se a barra atual (df.iloc[-1])
-        realiza o breakout.
-        """
-        if len(df) < SQUEEZE_LOOKBACK + 2:
-            return None
-
-        # O df["is_squeeze"] foi calculado na barra add_indicators
-        squeeze_now = bool(df["is_squeeze"].iloc[-1])
-        last = df.iloc[-1]
-
-        # --- Se estamos numa squeeze (ou seja, a barra anterior foi squeeze), testar breakout ---
-        if self.active:
-            signal, price = check_entry(df, self.high, self.low)
-            if signal and price:
-                logger.info(
-                    "BREAKOUT detectado! signal=%s price=%.2f "
-                    "squeeze_high=%.2f squeeze_low=%.2f",
-                    signal, price, self.high, self.low,
-                )
-                sh_temp, sl_temp = self.high, self.low
-                self.active = False
-                self.high = 0.0
-                self.low = float("inf")
-                atr_val = last["atr"]
-                sl, tp = calculate_sl_tp(price, atr_val, signal)
-                return {
-                    "signal": signal,
-                    "price": price,
-                    "atr": atr_val,
-                    "sl": sl,
-                    "tp": tp,
-                    "squeeze_high": sh_temp,
-                    "squeeze_low": sl_temp,
-                }
-            else:
-                # O squeeze expirou pois o breakout do Pine Script exige entrada imediata
-                self.active = False
-
-        # --- Se este candle é squeeze, guardar nível para o próximo candle ---
-        if squeeze_now:
-            self.active = True
-            self.high = float(last["high"])
-            self.low = float(last["low"])
-            logger.info(
-                "SQUEEZE detectado! high=%.2f low=%.2f atr=%.4f",
-                self.high, self.low, last["atr"],
-            )
-
-        return None
-
-
 class TradingBot:
     def __init__(self) -> None:
         self._settings = get_settings()
@@ -109,7 +49,7 @@ class TradingBot:
         self._running = False
         self._ticker: Optional[str] = None
         self._df: Optional[pd.DataFrame] = None
-        self._squeeze: dict[str, SqueezeTracker] = {}
+        self._active_squeeze: dict[str, dict[str, float]] = {}
         # Posições isoladas por símbolo
         self._positions: dict[str, Dict[str, Any]] = {}
         # Tracking de candles processados (evitar reprocessar mesmo candle)
@@ -228,9 +168,42 @@ class TradingBot:
 
             self._last_candle_ts[symbol] = last_closed_ts
 
+            # --- Atualizar níveis de squeeze ativo para exibição ---
+            if len(df_closed) >= 1 and bool(df_closed.iloc[-1]["is_squeeze"]):
+                self._active_squeeze[symbol] = {
+                    "high": float(df_closed.iloc[-1]["high"]),
+                    "low": float(df_closed.iloc[-1]["low"]),
+                }
+            else:
+                self._active_squeeze.pop(symbol, None)
+
             if symbol not in self._positions:
-                sq = self._squeeze.setdefault(symbol, SqueezeTracker())
-                entry = sq.update(df_closed)
+                entry = None
+                if len(df_closed) >= 2:
+                    prev_bar = df_closed.iloc[-2]
+                    curr_bar = df_closed.iloc[-1]
+                    if bool(prev_bar["is_squeeze"]):
+                        squeeze_high = float(prev_bar["high"])
+                        squeeze_low = float(prev_bar["low"])
+                        
+                        signal, price = check_entry(df_closed, squeeze_high, squeeze_low)
+                        if signal and price:
+                            logger.info(
+                                "BREAKOUT detectado (stateless)! symbol=%s signal=%s price=%.2f "
+                                "squeeze_high=%.2f squeeze_low=%.2f",
+                                symbol, signal, price, squeeze_high, squeeze_low,
+                            )
+                            atr_val = float(curr_bar["atr"])
+                            sl, tp = calculate_sl_tp(price, atr_val, signal)
+                            entry = {
+                                "signal": signal,
+                                "price": price,
+                                "atr": atr_val,
+                                "sl": sl,
+                                "tp": tp,
+                                "squeeze_high": squeeze_high,
+                                "squeeze_low": squeeze_low,
+                            }
                 if entry:
                     await self._open_position(symbol, entry, df_closed)
 
@@ -246,10 +219,10 @@ class TradingBot:
         # Último squeeze ativo (qualquer símbolo)
         last_sh: float | None = None
         last_sl: float | None = None
-        for sq in self._squeeze.values():
-            if sq.active:
-                last_sh = sq.high
-                last_sl = sq.low
+        for sq_info in self._active_squeeze.values():
+            last_sh = sq_info["high"]
+            last_sl = sq_info["low"]
+            break
 
         current_balance = None
         try:

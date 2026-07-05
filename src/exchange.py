@@ -41,7 +41,7 @@ class BinanceFutures:
         self._http = httpx.AsyncClient(
             base_url=self._base,
             limits=httpx.Limits(max_keepalive_connections=5, max_connections=10),
-            timeout=httpx.Timeout(connect=10.0, read=30.0, write=10.0),
+            timeout=httpx.Timeout(connect=10.0, read=30.0, write=10.0, pool=10.0),
         )
         self._recv_window = 5000
 
