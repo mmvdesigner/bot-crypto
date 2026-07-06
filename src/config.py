@@ -23,7 +23,7 @@ class Settings:
 
     trade_mode: str = field(default_factory=lambda: os.getenv("TRADE_MODE", "paper").strip().lower())
     symbols: tuple[str, ...] = field(default_factory=lambda: tuple(
-        s.strip().upper() for s in os.getenv("SYMBOLS", "BTCUSDT,BNBUSD").split(",") if s.strip()
+        s.strip().upper() for s in os.getenv("SYMBOLS", "BTCUSDT").split(",") if s.strip()
     ))
 
     @property
