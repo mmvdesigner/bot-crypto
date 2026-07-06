@@ -26,7 +26,7 @@ services:
       - key: TRADE_MODE
         value: "paper"
       - key: SYMBOLS
-        value: "BTCUSDT,BNBUSD"
+        value: "BTCUSDT"
 
   # ── Bot Background Worker ────────────────────────────────────────
   - type: worker
@@ -50,4 +50,4 @@ services:
       - key: TRADE_MODE
         value: "paper"
       - key: SYMBOLS
-        value: "BTCUSDT,BNBUSD"
+        value: "BTCUSDT"

@@ -4,7 +4,7 @@ Bot automatizado de trading para futuros na Binance, operando a estratégia **Ex
 
 ## Funcionalidades
 
-- Estratégia "Expansão de Volume" em BTCUSDT e BNBUSD (15m)
+- Estratégia "Expansão de Volume" em BTCUSDT (15m)
 - Squeeze detection: ATR comprimido seguido de breakout com volume
 - Suporte a múltiplos símbolos simultâneos
 - Modo PAPER (simulação) e LIVE (ordens reais)
@@ -120,7 +120,7 @@ BINANCE_TESTNET=true
 
 # Trading
 TRADE_MODE=paper          # paper | live
-SYMBOLS=BTCUSDT,BNBUSD
+SYMBOLS=BTCUSDT
 ```
 
 ### Binance Testnet
