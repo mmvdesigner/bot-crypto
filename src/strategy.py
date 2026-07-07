@@ -29,11 +29,12 @@ def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
 
 def detect_squeeze(atr_series: pd.Series, lookback: int = SQUEEZE_LOOKBACK) -> pd.Series:
     """
-    Retorna uma Series booleana indicando se o ATR atual é o menor dos últimos lookback períodos.
-    Equivale a `atr == ta.lowest(atr, 20)` no Pine Script.
+    Retorna uma Series booleana indicando se o ATR atual está dentro de 2%
+    do menor ATR dos últimos lookback períodos.
+    Equivale a `atr <= ta.lowest(atr, 20) * 1.02` no Pine Script.
     """
     lowest_atr = atr_series.rolling(window=lookback, min_periods=lookback).min()
-    return atr_series == lowest_atr
+    return atr_series <= lowest_atr * SQUEEZE_TOLERANCE
 
 
 def check_entry(

@@ -166,12 +166,51 @@ class TradingBot:
 
             self._last_candle_ts[symbol] = last_closed_ts
 
-            # --- Atualizar níveis de squeeze ativo (persistente como ta.valuewhen) ---
-            if len(df_closed) >= 1 and bool(df_closed.iloc[-1]["is_squeeze"]):
-                self._active_squeeze[symbol] = {
-                    "high": float(df_closed.iloc[-1]["high"]),
-                    "low": float(df_closed.iloc[-1]["low"]),
+            # --- Atualizar níveis de squeeze ativo ---
+            # Regras:
+            # 1. Só armazenamos o nível squeeze da barra MAIS ESTREITA do ciclo
+            #    (evita que candles consecutivos com ATR baixo mas range maior
+            #     sobrescrevam com um nível mais largo).
+            # 2. Uma vez definido, o nível persiste até o breakout.
+            # 3. Squeezes mais estreitos atualizam o nível para baixo.
+            def _tightest_squeeze(start_idx: int) -> dict | None:
+                best_idx = start_idx
+                best_range = float(df_closed.iloc[start_idx]["high"]) - float(df_closed.iloc[start_idx]["low"])
+                for j in range(start_idx - 1, -1, -1):
+                    if not bool(df_closed.iloc[j]["is_squeeze"]):
+                        break
+                    r = float(df_closed.iloc[j]["high"]) - float(df_closed.iloc[j]["low"])
+                    if r < best_range:
+                        best_range = r
+                        best_idx = j
+                return {
+                    "high": float(df_closed.iloc[best_idx]["high"]),
+                    "low": float(df_closed.iloc[best_idx]["low"]),
                 }
+
+            is_sq = bool(df_closed.iloc[-1]["is_squeeze"])
+            if is_sq:
+                curr_range = float(df_closed.iloc[-1]["high"]) - float(df_closed.iloc[-1]["low"])
+                existing = self._active_squeeze.get(symbol)
+
+                if existing is None:
+                    sq_level = _tightest_squeeze(len(df_closed) - 1)
+                    if sq_level:
+                        self._active_squeeze[symbol] = sq_level
+                elif curr_range < existing["high"] - existing["low"]:
+                    self._active_squeeze[symbol] = {
+                        "high": float(df_closed.iloc[-1]["high"]),
+                        "low": float(df_closed.iloc[-1]["low"]),
+                    }
+            elif symbol not in self._active_squeeze:
+                # Startup: escanear candles recentes (máx 20) por squeeze ativo
+                start = max(0, len(df_closed) - 21)
+                for i in range(len(df_closed) - 1, start - 1, -1):
+                    if bool(df_closed.iloc[i]["is_squeeze"]):
+                        sq_level = _tightest_squeeze(i)
+                        if sq_level:
+                            self._active_squeeze[symbol] = sq_level
+                        break
 
             # --- Verificar entrada nos níveis do squeeze ativo ---
             sq = self._active_squeeze.get(symbol)
