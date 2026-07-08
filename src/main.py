@@ -435,7 +435,7 @@ class TradingBot:
             f"sq_h={sq_level['high']:.2f} sq_l={sq_level['low']:.2f}"
         )
         del self._active_squeeze[symbol]
-        await self._open_position(symbol, breakout, self._df or pd.DataFrame())
+        await self._open_position(symbol, breakout, self._df if self._df is not None else pd.DataFrame())
 
     # ------------------------------------------------------------------
     #  Utilitários
