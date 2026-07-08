@@ -278,10 +278,10 @@ def dashboard_page() -> None:
     with cols[2]:
         bal_str = f"${bal:,.2f}" if bal else "—"
         bal_note = ""
-        if not bal and bal_error:
+        if not settings.is_live:
+            bal_note = "(simulado)" if bal is not None else ""
+        elif not bal and bal_error:
             bal_note = f"⚠️ {bal_error[:50]}"
-        elif not settings.is_live:
-            bal_note = "(simulado)" if bal else ""
         st.markdown(f"**Saldo**  \n`{bal_str}`  \n{bal_note}")
     with cols[3]:
         st.markdown(f"**Posição**  \n`{position}`")
