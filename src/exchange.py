@@ -6,6 +6,7 @@ import hmac
 import logging
 import time
 from typing import Any, Dict, Optional
+from urllib.parse import urlencode
 
 import httpx
 
@@ -60,7 +61,7 @@ class BinanceFutures:
     # ------------------------------------------------------------------
 
     def _sign(self, params: Dict[str, Any]) -> str:
-        query = "&".join(f"{k}={v}" for k, v in sorted(params.items()))
+        query = urlencode(params)
         return hmac.new(
             self._settings.binance_secret_key.encode(),
             query.encode(),
@@ -84,7 +85,9 @@ class BinanceFutures:
         if signed:
             params["timestamp"] = int(time.time() * 1000) + self._time_offset
             params["recvWindow"] = self._recv_window
-            params["signature"] = self._sign(params)
+            sig = self._sign(params)
+            # Construir query string na ordem de inserção, adicionar signature no final
+            params["signature"] = sig
 
         headers: Dict[str, str] = {}
         if signed or self._settings.binance_api_key:
@@ -94,11 +97,13 @@ class BinanceFutures:
 
         for attempt in range(1, retries + 1):
             try:
+                # Passar params como string ordenada para garantir ordem de assinatura
+                query_string = urlencode(params) if signed else params
                 resp = await self._http.request(
                     method=method,
                     url=path,
                     headers=headers,
-                    params=params if method == "GET" else None,
+                    params=query_string if method == "GET" else None,
                     data=params if method in ("POST", "PUT", "DELETE") else None,
                 )
 
