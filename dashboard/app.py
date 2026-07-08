@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import sys
@@ -16,6 +17,7 @@ import hmac
 import httpx
 import pandas as pd
 import streamlit as st
+from streamlit_autorefresh import st_autorefresh
 
 _project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if _project_root not in sys.path:
@@ -234,12 +236,8 @@ def dashboard_page() -> None:
     settings = get_settings()
     mode = "🔴 LIVE" if settings.is_live else "🟢 PAPER"
 
-    # Auto-refresh a cada 15s
-    if "last_refresh" not in st.session_state:
-        st.session_state.last_refresh = time.time()
-    if time.time() - st.session_state.last_refresh > 15:
-        st.session_state.last_refresh = time.time()
-        st.rerun()
+    # Auto-refresh real a cada 15s
+    st_autorefresh(interval=15_000, key="dash_autorefresh")
 
     # ── Header ──────────────────────────────────────────────────────────
     st.markdown(f"# 🤖 Bot Crypto  ·  `{mode}`")
@@ -255,6 +253,7 @@ def dashboard_page() -> None:
     if bal is None:
         bal = state.get("current_balance")
 
+    last_error = state.get("last_error")
     updated_at = state.get("updated_at") or state.get("last_update")
     if updated_at:
         try:
@@ -265,12 +264,21 @@ def dashboard_page() -> None:
     else:
         label = "—"
 
-    last_error = state.get("last_error")
+    # Erro recente (menos de 5 min) exibe como warning
+    now_utc = datetime.now(timezone.utc)
+    if last_error and updated_at:
+        try:
+            err_dt = datetime.fromisoformat(str(updated_at).replace("Z", "+00:00"))
+            if (now_utc - err_dt).total_seconds() < 300:
+                st.error(f"⚠️ {last_error}")
+        except Exception:
+            pass
 
     # ── Linha 1: Status + Preços + Saldo ───────────────────────────────
     cols = st.columns([1.2, 1.5, 1.2, 0.8, 0.8, 0.8])
+    agora_brt = datetime.now(timezone.utc).astimezone(_BRT).strftime("%d/%m %H:%M:%S")
     with cols[0]:
-        st.markdown(f"**Status**  \n{_status_badge(status)}  \n🔄 `{label}`", unsafe_allow_html=True)
+        st.markdown(f"**Status**  \n{_status_badge(status)}  \n🔄 últ atualiz: `{label}`  \n🕐 agora: `{agora_brt}`", unsafe_allow_html=True)
     with cols[1]:
         for s in settings.symbols:
             p = prices.get(s)
@@ -356,17 +364,18 @@ def dashboard_page() -> None:
         ts_entry = trade.get("timestamp", "")
         current_price = prices.get(settings.symbols[0]) if prices else None
 
-        pnl_unrealized = None
+        pnl_unrealized = state.get("current_pnl")
         pnl_pct = None
         sl_val = state.get("current_sl")
         tp_val = state.get("current_tp")
-        if entry and current_price:
+        if pnl_unrealized is None and entry and current_price:
             if side == "LONG":
                 pnl_unrealized = (current_price - entry) * (amount or 0)
-                pnl_pct = (current_price - entry) / entry * 100
             else:
                 pnl_unrealized = (entry - current_price) * (amount or 0)
-                pnl_pct = (entry - current_price) / entry * 100
+        if entry and current_price:
+            diff = (current_price - entry) if side == "LONG" else (entry - current_price)
+            pnl_pct = diff / entry * 100 if entry else None
 
         cols = st.columns([1, 1, 1, 1, 1, 1])
         with cols[0]:

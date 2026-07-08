@@ -46,12 +46,10 @@ class TradingBot:
         self._running = False
         self._ticker: Optional[str] = None
         self._df: Optional[pd.DataFrame] = None
-        self._active_squeeze: dict[str, dict[str, float]] = {}
-        self._active_squeeze_start_idx: dict[str, int] = {}
-        # Posições isoladas por símbolo
+        self._active_squeeze: dict[str, dict] = {}
         self._positions: dict[str, Dict[str, Any]] = {}
-        # Tracking de candles processados (evitar reprocessar mesmo candle)
         self._last_candle_ts: dict[str, int] = {}
+        self._processed_entries: set[str] = set()
 
     # ------------------------------------------------------------------
     #  Loops
@@ -86,6 +84,18 @@ class TradingBot:
     async def _main_loop(self) -> None:
         self._db.insert_log("INFO", "Bot iniciado (mode=%s, symbols=%s)" % (
             self._settings.trade_mode, ",".join(self._settings.symbols)))
+        # Recuperar trades abertos no banco (recuperação de restart)
+        open_trades = self._db.get_open_trades()
+        for t in open_trades:
+            sym = self._settings.symbols[0]
+            self._positions[sym] = {
+                "side": t["side"],
+                "entry_price": float(t["entry_price"]),
+                "amount": float(t["amount"]),
+                "entry_atr": 0,
+                "trade_id": t["id"],
+            }
+            self._db.insert_log("INFO", f"Recuperado trade OPEN {t['side']} entry={t['entry_price']}")
         while self._running:
             try:
                 state = self._db.get_bot_state()
@@ -197,7 +207,6 @@ class TradingBot:
                 }
 
             def _scan_breakout(sq_level: dict) -> dict | None:
-                """Escaneia candles após o tightest squeeze em busca de breakout com volume."""
                 for i in range(sq_level["start_idx"] + 1, len(df_closed)):
                     row = df_closed.iloc[i]
                     close = float(row["close"])
@@ -217,15 +226,16 @@ class TradingBot:
                     sq_level = _tightest_squeeze(len(df_closed) - 1)
                     if sq_level:
                         self._active_squeeze[symbol] = sq_level
-                        breakout = _scan_breakout(sq_level)
-                        if breakout:
-                            await self._enter_on_breakout(symbol, breakout, sq_level)
+                        await self._try_enter(symbol, sq_level, df_closed)
                 elif curr_range < existing["high"] - existing["low"]:
                     self._active_squeeze[symbol] = {
                         "high": float(df_closed.iloc[-1]["high"]),
                         "low": float(df_closed.iloc[-1]["low"]),
                         "start_idx": existing.get("start_idx", len(df_closed) - 1),
                     }
+                    await self._try_enter(symbol, self._active_squeeze[symbol], df_closed)
+                elif symbol not in self._positions:
+                    await self._try_enter(symbol, existing, df_closed)
             elif symbol not in self._active_squeeze:
                 start = max(0, len(df_closed) - 21)
                 for i in range(len(df_closed) - 1, start - 1, -1):
@@ -233,17 +243,10 @@ class TradingBot:
                         sq_level = _tightest_squeeze(i)
                         if sq_level:
                             self._active_squeeze[symbol] = sq_level
-                            breakout = _scan_breakout(sq_level)
-                            if breakout:
-                                await self._enter_on_breakout(symbol, breakout, sq_level)
+                            await self._try_enter(symbol, sq_level, df_closed)
                         break
             elif symbol in self._active_squeeze and symbol not in self._positions:
-                sq_level = self._active_squeeze[symbol]
-                if "start_idx" not in sq_level:
-                    sq_level["start_idx"] = max(0, len(df_closed) - 21)
-                breakout = _scan_breakout(sq_level)
-                if breakout:
-                    await self._enter_on_breakout(symbol, breakout, sq_level)
+                await self._try_enter(symbol, self._active_squeeze[symbol], df_closed)
 
         # --- Atualizar bot_state ---
         # Manter compatibilidade com CHECK constraint (FLAT/LONG/SHORT)
@@ -432,11 +435,26 @@ class TradingBot:
 
         del self._positions[symbol]
 
-    async def _enter_on_breakout(
-        self, symbol: str, breakout: dict, sq_level: dict
-    ) -> None:
+    async def _try_enter(self, symbol: str, sq_level: dict, df_closed: pd.DataFrame) -> None:
         if symbol in self._positions:
             return
+        sq_key = f"{symbol}_{sq_level['high']}_{sq_level['low']}"
+        if sq_key in self._processed_entries:
+            return
+        breakout = None
+        for i in range(sq_level["start_idx"] + 1, len(df_closed)):
+            row = df_closed.iloc[i]
+            close = float(row["close"])
+            vol_ok = float(row["volume"]) > float(row["volume_sma"]) * VOLUME_MULTIPLIER
+            if close > sq_level["high"] and vol_ok:
+                breakout = {"signal": "LONG", "price": close, "atr": float(row["atr"]), "bar_idx": i}
+                break
+            if close < sq_level["low"] and vol_ok:
+                breakout = {"signal": "SHORT", "price": close, "atr": float(row["atr"]), "bar_idx": i}
+                break
+        if not breakout:
+            return
+        self._processed_entries.add(sq_key)
         sl, tp = calculate_sl_tp(breakout["price"], breakout["atr"], breakout["signal"])
         breakout["sl"] = sl
         breakout["tp"] = tp
