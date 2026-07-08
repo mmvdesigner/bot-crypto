@@ -153,6 +153,34 @@ class SupabaseDB:
             logger.error("get_recent_trades: %s", e)
             return []
 
+    # ------------------------------------------------------------------
+    #  bot_logs
+    # ------------------------------------------------------------------
+
+    def insert_log(self, level: str, message: str) -> None:
+        try:
+            self._bot().table("bot_logs").insert({
+                "level": level.upper(),
+                "message": str(message)[:1000],
+            }).execute()
+        except Exception as e:
+            logger.error("insert_log: %s", e)
+
+    def get_recent_logs(self, limit: int = 50) -> List[Dict[str, Any]]:
+        try:
+            r = (
+                self._bot()
+                .table("bot_logs")
+                .select("*")
+                .order("created_at", desc=True)
+                .limit(limit)
+                .execute()
+            )
+            return r.data
+        except Exception as e:
+            logger.error("get_recent_logs: %s", e)
+            return []
+
     def get_summary(self) -> Dict[str, Any]:
         try:
             closed = (

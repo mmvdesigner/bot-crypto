@@ -258,11 +258,13 @@ def dashboard_page() -> None:
     if updated_at:
         try:
             dt = datetime.fromisoformat(str(updated_at).replace("Z", "+00:00"))
-            label = dt.strftime("%H:%M:%S")
+            label = dt.strftime("%d/%m %H:%M:%S")
         except Exception:
             label = str(updated_at)[:19]
     else:
         label = "—"
+
+    last_error = state.get("last_error")
 
     # ── Linha 1: Status + Preços + Saldo ───────────────────────────────
     cols = st.columns([1.2, 1.5, 1.2, 0.8, 0.8, 0.8])
@@ -370,6 +372,41 @@ def dashboard_page() -> None:
         )
     else:
         st.info("Nenhum trade no histórico.")
+
+    # ── Erro recente ──────────────────────────────────────────────────
+    if last_error:
+        st.markdown("---")
+        st.error(f"⚠️ Último erro: `{last_error}`")
+
+    # ── Logs ao vivo ────────────────────────────────────────────────────
+    st.markdown("---")
+    st.subheader("📋 Logs do Bot")
+
+    logs = db.get_recent_logs(30)
+    if logs:
+        log_lines = []
+        for log in logs:
+            ts = log.get("created_at", "")
+            lvl = log.get("level", "INFO")
+            msg = log.get("message", "")
+            try:
+                dt = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+                ts_fmt = dt.strftime("%H:%M:%S")
+            except Exception:
+                ts_fmt = str(ts)[:19]
+            color = {"ERROR": "#ff4444", "WARNING": "#ffaa00", "INFO": "#00cc66", "DEBUG": "#888"}.get(lvl, "#888")
+            log_lines.append(
+                f'<span style="color:{color};font-weight:bold">{lvl}</span> '
+                f'<span style="color:#888">{ts_fmt}</span> {msg}'
+            )
+        st.markdown(
+            "<div style='background:#1e1e1e;padding:10px;border-radius:8px;"
+            "font-family:monospace;font-size:0.8em;max-height:300px;overflow-y:auto'>"
+            + "<br>".join(log_lines[:30]) + "</div>",
+            unsafe_allow_html=True,
+        )
+    else:
+        st.info("Nenhum log registrado ainda.")
 
     # ── Logout ──────────────────────────────────────────────────────────
     st.markdown("---")

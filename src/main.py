@@ -13,9 +13,9 @@ from src.config import get_settings
 from src.database import SupabaseDB
 from src.exchange import BinanceFutures
 from src.strategy import (
+    VOLUME_MULTIPLIER,
     add_indicators,
     calculate_sl_tp,
-    check_entry,
     check_exit,
     detect_squeeze,
 )
@@ -26,7 +26,6 @@ logger = logging.getLogger(__name__)
 #  Bot principal
 # ---------------------------------------------------------------------------
 
-SQUEEZE_LOOKBACK = 20
 TICK_INTERVAL = 10  # segundos entre cada polling
 ERROR_COOLDOWN = 60  # segundos após erro antes de tentar novamente
 
@@ -48,6 +47,7 @@ class TradingBot:
         self._ticker: Optional[str] = None
         self._df: Optional[pd.DataFrame] = None
         self._active_squeeze: dict[str, dict[str, float]] = {}
+        self._active_squeeze_start_idx: dict[str, int] = {}
         # Posições isoladas por símbolo
         self._positions: dict[str, Dict[str, Any]] = {}
         # Tracking de candles processados (evitar reprocessar mesmo candle)
@@ -83,12 +83,22 @@ class TradingBot:
         self._running = False
 
     async def _main_loop(self) -> None:
+        self._db.insert_log("INFO", "Bot iniciado (mode=%s, symbols=%s)" % (
+            self._settings.trade_mode, ",".join(self._settings.symbols)))
         while self._running:
             try:
                 state = self._db.get_bot_state()
                 status = (state or {}).get("status", "STOPPED")
 
                 if status != "RUNNING":
+                    if state is None:
+                        logger.info("bot_state vazio — inicializando como RUNNING")
+                        self._db.upsert_bot_state({
+                            "status": "RUNNING",
+                            "current_position": "FLAT",
+                        })
+                        await asyncio.sleep(TICK_INTERVAL)
+                        continue
                     logger.info("Bot %s. Aguardando %ds...", status, TICK_INTERVAL)
                     self._db.upsert_bot_state({
                         "current_position": "FLAT",
@@ -102,12 +112,13 @@ class TradingBot:
 
             except Exception as e:
                 logger.error("Erro no loop principal: %s", e, exc_info=True)
-                # NÃO travar em ERROR — auto-recover após cooldown
-                logger.info("Auto-recovery em %ds...", ERROR_COOLDOWN)
+                err_msg = f"{type(e).__name__}: {e}"[:500]
                 try:
-                    self._db.upsert_bot_state({"status": "RUNNING"})
+                    self._db.upsert_bot_state({"status": "RUNNING", "last_error": err_msg})
+                    self._db.insert_log("ERROR", err_msg)
                 except Exception:
                     pass
+                logger.info("Auto-recovery em %ds...", ERROR_COOLDOWN)
                 await asyncio.sleep(ERROR_COOLDOWN)
                 continue
 
@@ -156,6 +167,7 @@ class TradingBot:
                     entry_atr=pos["entry_atr"],
                 )
                 if exit_hit:
+                    self._db.insert_log("INFO", f"EXIT {symbol} {pos['side']} SL/TP hit")
                     await self._close_position(symbol, float(forming["close"]))
                     continue
 
@@ -167,12 +179,6 @@ class TradingBot:
             self._last_candle_ts[symbol] = last_closed_ts
 
             # --- Atualizar níveis de squeeze ativo ---
-            # Regras:
-            # 1. Só armazenamos o nível squeeze da barra MAIS ESTREITA do ciclo
-            #    (evita que candles consecutivos com ATR baixo mas range maior
-            #     sobrescrevam com um nível mais largo).
-            # 2. Uma vez definido, o nível persiste até o breakout.
-            # 3. Squeezes mais estreitos atualizam o nível para baixo.
             def _tightest_squeeze(start_idx: int) -> dict | None:
                 best_idx = start_idx
                 best_range = float(df_closed.iloc[start_idx]["high"]) - float(df_closed.iloc[start_idx]["low"])
@@ -186,7 +192,20 @@ class TradingBot:
                 return {
                     "high": float(df_closed.iloc[best_idx]["high"]),
                     "low": float(df_closed.iloc[best_idx]["low"]),
+                    "start_idx": best_idx,
                 }
+
+            def _scan_breakout(sq_level: dict) -> dict | None:
+                """Escaneia candles após o tightest squeeze em busca de breakout com volume."""
+                for i in range(sq_level["start_idx"] + 1, len(df_closed)):
+                    row = df_closed.iloc[i]
+                    close = float(row["close"])
+                    vol_ok = float(row["volume"]) > float(row["volume_sma"]) * VOLUME_MULTIPLIER
+                    if close > sq_level["high"] and vol_ok:
+                        return {"signal": "LONG", "price": close, "atr": float(row["atr"]), "bar_idx": i}
+                    if close < sq_level["low"] and vol_ok:
+                        return {"signal": "SHORT", "price": close, "atr": float(row["atr"]), "bar_idx": i}
+                return None
 
             is_sq = bool(df_closed.iloc[-1]["is_squeeze"])
             if is_sq:
@@ -197,44 +216,33 @@ class TradingBot:
                     sq_level = _tightest_squeeze(len(df_closed) - 1)
                     if sq_level:
                         self._active_squeeze[symbol] = sq_level
+                        breakout = _scan_breakout(sq_level)
+                        if breakout:
+                            await self._enter_on_breakout(symbol, breakout, sq_level)
                 elif curr_range < existing["high"] - existing["low"]:
                     self._active_squeeze[symbol] = {
                         "high": float(df_closed.iloc[-1]["high"]),
                         "low": float(df_closed.iloc[-1]["low"]),
+                        "start_idx": existing.get("start_idx", len(df_closed) - 1),
                     }
             elif symbol not in self._active_squeeze:
-                # Startup: escanear candles recentes (máx 20) por squeeze ativo
                 start = max(0, len(df_closed) - 21)
                 for i in range(len(df_closed) - 1, start - 1, -1):
                     if bool(df_closed.iloc[i]["is_squeeze"]):
                         sq_level = _tightest_squeeze(i)
                         if sq_level:
                             self._active_squeeze[symbol] = sq_level
+                            breakout = _scan_breakout(sq_level)
+                            if breakout:
+                                await self._enter_on_breakout(symbol, breakout, sq_level)
                         break
-
-            # --- Verificar entrada nos níveis do squeeze ativo ---
-            sq = self._active_squeeze.get(symbol)
-            if sq and symbol not in self._positions and len(df_closed) >= 1:
-                curr_bar = df_closed.iloc[-1]
-                signal, price = check_entry(df_closed, sq["high"], sq["low"])
-                if signal and price:
-                    logger.info(
-                        "BREAKOUT detectado! symbol=%s signal=%s price=%.2f "
-                        "squeeze_high=%.2f squeeze_low=%.2f",
-                        symbol, signal, price, sq["high"], sq["low"],
-                    )
-                    atr_val = float(curr_bar["atr"])
-                    sl, tp = calculate_sl_tp(price, atr_val, signal)
-                    entry = {
-                        "signal": signal,
-                        "price": price,
-                        "atr": atr_val,
-                        "sl": sl,
-                        "tp": tp,
-                        "squeeze_high": sq["high"],
-                        "squeeze_low": sq["low"],
-                    }
-                    await self._open_position(symbol, entry, df_closed)
+            elif symbol in self._active_squeeze and symbol not in self._positions:
+                sq_level = self._active_squeeze[symbol]
+                if "start_idx" not in sq_level:
+                    sq_level["start_idx"] = max(0, len(df_closed) - 21)
+                breakout = _scan_breakout(sq_level)
+                if breakout:
+                    await self._enter_on_breakout(symbol, breakout, sq_level)
 
         # --- Atualizar bot_state ---
         # Manter compatibilidade com CHECK constraint (FLAT/LONG/SHORT)
@@ -404,6 +412,30 @@ class TradingBot:
             self._db.close_trade(trade_id, exit_price, pnl)
 
         del self._positions[symbol]
+
+    async def _enter_on_breakout(
+        self, symbol: str, breakout: dict, sq_level: dict
+    ) -> None:
+        if symbol in self._positions:
+            return
+        sl, tp = calculate_sl_tp(breakout["price"], breakout["atr"], breakout["signal"])
+        breakout["sl"] = sl
+        breakout["tp"] = tp
+        breakout["squeeze_high"] = sq_level["high"]
+        breakout["squeeze_low"] = sq_level["low"]
+        logger.info(
+            "BREAKOUT detectado! symbol=%s signal=%s price=%.2f "
+            "squeeze_high=%.2f squeeze_low=%.2f",
+            symbol, breakout["signal"], breakout["price"],
+            sq_level["high"], sq_level["low"],
+        )
+        self._db.insert_log(
+            "INFO",
+            f"BREAKOUT {symbol} {breakout['signal']} price={breakout['price']:.2f} "
+            f"sq_h={sq_level['high']:.2f} sq_l={sq_level['low']:.2f}"
+        )
+        del self._active_squeeze[symbol]
+        await self._open_position(symbol, breakout, self._df or pd.DataFrame())
 
     # ------------------------------------------------------------------
     #  Utilitários

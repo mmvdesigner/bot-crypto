@@ -25,6 +25,9 @@ CREATE TABLE IF NOT EXISTS bot_state (
     current_position TEXT NOT NULL DEFAULT 'FLAT' CHECK (current_position IN ('FLAT', 'LONG', 'SHORT')),
     last_squeeze_high NUMERIC,
     last_squeeze_low NUMERIC,
+    current_prices JSONB,
+    current_balance NUMERIC,
+    last_error TEXT,
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
@@ -55,6 +58,24 @@ CREATE POLICY "auth_read_bot_state"   ON bot_state   FOR SELECT USING (auth.role
 CREATE POLICY "auth_update_bot_state" ON bot_state   FOR UPDATE USING (auth.role() = 'authenticated');
 CREATE POLICY "svc_all_trades_log"    ON trades_log FOR ALL USING (auth.role() = 'service_role');
 CREATE POLICY "svc_all_bot_state"     ON bot_state   FOR ALL USING (auth.role() = 'service_role');
+
+-- bot_logs (logs estruturados do bot)
+CREATE TABLE IF NOT EXISTS bot_logs (
+    id BIGSERIAL PRIMARY KEY,
+    level TEXT NOT NULL DEFAULT 'INFO' CHECK (level IN ('DEBUG', 'INFO', 'WARNING', 'ERROR')),
+    message TEXT NOT NULL,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_bot_logs_created ON bot_logs(created_at DESC);
+-- Manter só os últimos 500 logs
+CREATE OR REPLACE FUNCTION prune_bot_logs() RETURNS trigger AS $$
+BEGIN
+    DELETE FROM bot_logs WHERE id NOT IN (SELECT id FROM bot_logs ORDER BY created_at DESC LIMIT 500);
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+DROP TRIGGER IF EXISTS trg_prune_bot_logs ON bot_logs;
+CREATE TRIGGER trg_prune_bot_logs AFTER INSERT ON bot_logs EXECUTE FUNCTION prune_bot_logs();
 
 -- Linha inicial
 INSERT INTO bot_state (status, current_position)
