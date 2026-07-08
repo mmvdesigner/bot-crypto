@@ -44,6 +44,7 @@ class BinanceFutures:
             timeout=httpx.Timeout(connect=10.0, read=30.0, write=10.0, pool=10.0),
         )
         self._recv_window = 5000
+        self._time_offset: int = 0
 
     async def close(self) -> None:
         await self._http.aclose()
@@ -81,7 +82,7 @@ class BinanceFutures:
         params = params or {}
 
         if signed:
-            params["timestamp"] = int(time.time() * 1000)
+            params["timestamp"] = int(time.time() * 1000) + self._time_offset
             params["recvWindow"] = self._recv_window
             params["signature"] = self._sign(params)
 
@@ -120,6 +121,13 @@ class BinanceFutures:
                     msg = body.get("msg", resp.text)
                     if "insufficient balance" in msg.lower() or "-2010" in msg or "-2011" in msg:
                         raise InsufficientBalanceError(msg)
+                    if "-1021" in msg:
+                        logger.warning("Timestamp offset detectado — sincronizando...")
+                        await self._sync_time()
+                        # Recalcular timestamp com offset atualizado
+                        params["timestamp"] = int(time.time() * 1000) + self._time_offset
+                        params["signature"] = self._sign(params)
+                        continue
                     raise ExchangeError(f"HTTP {resp.status_code}: {msg}")
 
                 if resp.status_code >= 500:
@@ -150,6 +158,15 @@ class BinanceFutures:
                 raise
 
         raise last or ExchangeError("Retries excedidos")
+
+    async def _sync_time(self) -> None:
+        """Sincroniza o timestamp local com o servidor da Binance."""
+        try:
+            server_time = await self._request("GET", "/fapi/v1/time")
+            self._time_offset = int(server_time["serverTime"]) - int(time.time() * 1000)
+            logger.info("Time offset sincronizado: %dms", self._time_offset)
+        except Exception as e:
+            logger.warning("Falha ao sincronizar time: %s", e)
 
     # ------------------------------------------------------------------
     #  API pública

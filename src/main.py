@@ -62,6 +62,7 @@ class TradingBot:
                      self._settings.trade_mode, self._settings.symbols)
 
         self._exchange = BinanceFutures()
+        await self._exchange._sync_time()
         self._running = True
 
         loop = asyncio.get_event_loop()
