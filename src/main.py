@@ -271,12 +271,25 @@ class TradingBot:
             if not self._settings.is_live:
                 current_balance = 10000.0
 
+        current_sl = None
+        current_tp = None
+        if self._positions:
+            first_pos = next(iter(self._positions.values()))
+            side = first_pos["side"]
+            entry = first_pos["entry_price"]
+            atr = first_pos.get("entry_atr", 0)
+            sl, tp = calculate_sl_tp(entry, atr, side)
+            current_sl = sl
+            current_tp = tp
+
         self._db.upsert_bot_state({
             "current_position": pos_label,
             "last_squeeze_high": last_sh if last_sh else None,
             "last_squeeze_low": last_sl if last_sl else None,
             "current_prices": prices,
             "current_balance": current_balance,
+            "current_sl": current_sl,
+            "current_tp": current_tp,
             "updated_at": datetime.now(timezone.utc).isoformat(),
         })
 

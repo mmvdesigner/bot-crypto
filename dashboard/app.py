@@ -343,17 +343,56 @@ def dashboard_page() -> None:
         avg = summary["pnl"] / summary["total"] if summary["total"] else 0
         st.markdown(f"**Média/Trade**  \n{_pnl_color(avg)}", unsafe_allow_html=True)
 
-    # ── Trades abertos ─────────────────────────────────────────────────
+    # ── Posição Atual ────────────────────────────────────────────────
     st.markdown("---")
-    st.subheader("📌 Trades Abertos")
+    st.subheader("📌 Posição Atual")
 
     open_trades = db.get_open_trades()
     if open_trades:
-        df = pd.DataFrame(open_trades)
-        cols = ["timestamp", "side", "entry_price", "amount", "strategy_name"]
-        st.dataframe(df[[c for c in cols if c in df.columns]], use_container_width=True)
+        trade = open_trades[0]
+        side = trade.get("side", "?")
+        entry = trade.get("entry_price")
+        amount = trade.get("amount")
+        ts_entry = trade.get("timestamp", "")
+        current_price = prices.get(settings.symbols[0]) if prices else None
+
+        pnl_unrealized = None
+        pnl_pct = None
+        sl_val = state.get("current_sl")
+        tp_val = state.get("current_tp")
+        if entry and current_price:
+            if side == "LONG":
+                pnl_unrealized = (current_price - entry) * (amount or 0)
+                pnl_pct = (current_price - entry) / entry * 100
+            else:
+                pnl_unrealized = (entry - current_price) * (amount or 0)
+                pnl_pct = (entry - current_price) / entry * 100
+
+        cols = st.columns([1, 1, 1, 1, 1, 1])
+        with cols[0]:
+            st.markdown(f"**Side**  \n`{side}`")
+        with cols[1]:
+            st.markdown(f"**Entry**  \n`${entry:,.2f}`" if entry else "**Entry**  \n—")
+        with cols[2]:
+            st.markdown(f"**Amount**  \n`{amount:,.4f}`" if amount else "**Amount**  \n—")
+        with cols[3]:
+            label_pnl = _pnl_color(pnl_unrealized) if pnl_unrealized is not None else "—"
+            st.markdown(f"**PnL Não Realizado**  \n{label_pnl}", unsafe_allow_html=True)
+        with cols[4]:
+            pct_str = f"{pnl_pct:+.2f}%" if pnl_pct is not None else "—"
+            color = "#00cc66" if pnl_pct is not None and pnl_pct >= 0 else "#ff4444"
+            st.markdown(f"**PnL %**  \n`<span style='color:{color}'>{pct_str}</span>`", unsafe_allow_html=True)
+        with cols[5]:
+            st.markdown(f"**SL / TP**  \n`{sl_val:,.2f}` / `{tp_val:,.2f}`" if sl_val and tp_val else "**SL / TP**  \n—")
+
+        try:
+            dt_entry = datetime.fromisoformat(str(ts_entry).replace("Z", "+00:00")).astimezone(_BRT)
+            entry_label = dt_entry.strftime("%d/%m %H:%M:%S")
+        except Exception:
+            entry_label = str(ts_entry)[:19]
+        st.caption(f"Entrada: {entry_label}  ·  Preço atual: `${current_price:,.2f}`" if current_price else f"Entrada: {entry_label}")
     else:
-        st.info("Nenhum trade aberto.")
+        st.info("Nenhum trade aberto no momento.")
 
     # ── Histórico recente ───────────────────────────────────────────────
     st.markdown("---")

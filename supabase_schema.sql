@@ -27,6 +27,8 @@ CREATE TABLE IF NOT EXISTS bot_state (
     last_squeeze_low NUMERIC,
     current_prices JSONB,
     current_balance NUMERIC,
+    current_sl NUMERIC,
+    current_tp NUMERIC,
     last_error TEXT,
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );
