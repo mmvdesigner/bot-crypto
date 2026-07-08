@@ -265,8 +265,11 @@ class TradingBot:
         current_balance = None
         try:
             current_balance = await self._exchange.get_balance_usdt()
+            if not self._settings.is_live and (current_balance is None or current_balance <= 0):
+                current_balance = 10000.0
         except Exception:
-            pass
+            if not self._settings.is_live:
+                current_balance = 10000.0
 
         self._db.upsert_bot_state({
             "current_position": pos_label,
@@ -301,7 +304,9 @@ class TradingBot:
         try:
             balance = await self._exchange.get_balance_usdt()
         except Exception:
-            balance = 10000.0  # fallback paper
+            balance = 10000.0
+        if not self._settings.is_live and balance <= 0:
+            balance = 10000.0  # paper mode: saldo simulado
 
         risk_amount = balance * 0.01
         price_dist = abs(price - sl)
