@@ -6,7 +6,9 @@ import os
 import sys
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
+
+_BRT = timezone(timedelta(hours=-3))
 
 import hashlib
 import hmac
@@ -257,7 +259,7 @@ def dashboard_page() -> None:
     updated_at = state.get("updated_at") or state.get("last_update")
     if updated_at:
         try:
-            dt = datetime.fromisoformat(str(updated_at).replace("Z", "+00:00"))
+            dt = datetime.fromisoformat(str(updated_at).replace("Z", "+00:00")).astimezone(_BRT)
             label = dt.strftime("%d/%m %H:%M:%S")
         except Exception:
             label = str(updated_at)[:19]
@@ -390,8 +392,8 @@ def dashboard_page() -> None:
             lvl = log.get("level", "INFO")
             msg = log.get("message", "")
             try:
-                dt = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
-                ts_fmt = dt.strftime("%H:%M:%S")
+                dt = datetime.fromisoformat(str(ts).replace("Z", "+00:00")).astimezone(_BRT)
+                ts_fmt = dt.strftime("%d/%m %H:%M:%S")
             except Exception:
                 ts_fmt = str(ts)[:19]
             color = {"ERROR": "#ff4444", "WARNING": "#ffaa00", "INFO": "#00cc66", "DEBUG": "#888"}.get(lvl, "#888")
