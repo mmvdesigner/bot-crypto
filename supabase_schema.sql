@@ -66,6 +66,9 @@ CREATE TABLE IF NOT EXISTS bot_logs (
     message TEXT NOT NULL,
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
+ALTER TABLE bot_logs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "svc_all_bot_logs" ON bot_logs FOR ALL USING (auth.role() = 'service_role');
+CREATE POLICY "auth_read_bot_logs" ON bot_logs FOR SELECT USING (auth.role() = 'authenticated');
 CREATE INDEX IF NOT EXISTS idx_bot_logs_created ON bot_logs(created_at DESC);
 -- Manter só os últimos 500 logs
 CREATE OR REPLACE FUNCTION prune_bot_logs() RETURNS trigger AS $$
