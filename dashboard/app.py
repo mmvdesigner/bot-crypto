@@ -170,7 +170,7 @@ _BALANCE_CACHE: dict = {}
 _BALANCE_LOCK = threading.Lock()
 
 
-def _fetch_testnet_balance() -> tuple[float | None, str | None]:
+def _fetch_live_balance() -> tuple[float | None, str | None]:
     with _BALANCE_LOCK:
         cached = _BALANCE_CACHE.get("balance")
         if cached and (datetime.now(timezone.utc) - cached["ts"]).total_seconds() < 120:
@@ -185,15 +185,14 @@ def _fetch_testnet_balance() -> tuple[float | None, str | None]:
                 error = "BINANCE_API_KEY ou BINANCE_SECRET_KEY vazias"
                 _BALANCE_CACHE["balance"] = {"value": None, "ts": datetime.now(timezone.utc)}
                 return None, error
-            if not key.startswith("L"):
-                error = f"Chave parece inválida (começa com {key[:2]}...)"
+            from urllib.parse import urlencode
             params = {"recvWindow": 5000, "timestamp": int(time.time() * 1000)}
-            q = "&".join(f"{k}={v}" for k, v in sorted(params.items()))
+            q = urlencode(params)
             sig = hmac.new(secret.encode(), q.encode(), hashlib.sha256).hexdigest()
             params["signature"] = sig
             r = httpx.get(
                 f"{base}/fapi/v2/account",
-                params=params,
+                params=q + "&signature=" + sig,
                 headers={"X-MBX-APIKEY": key},
                 timeout=10,
             )
@@ -206,7 +205,7 @@ def _fetch_testnet_balance() -> tuple[float | None, str | None]:
                         return val, None
                 error = "Asset USDT não encontrado na conta"
             else:
-                error = f"Testnet HTTP {r.status_code}: {r.text[:120]}"
+                error = f"HTTP {r.status_code}: {r.text[:120]}"
         except Exception as e:
             error = f"Exceção: {e}"
         _BALANCE_CACHE["balance"] = {"value": None, "ts": datetime.now(timezone.utc)}
@@ -252,7 +251,7 @@ def dashboard_page() -> None:
     prices = _fetch_current_prices(settings.symbols)
 
     # Saldo: tenta da testnet primeiro, fallback pro bot_state
-    bal, bal_error = _fetch_testnet_balance()
+    bal, bal_error = _fetch_live_balance()
     if bal is None:
         bal = state.get("current_balance")
 
