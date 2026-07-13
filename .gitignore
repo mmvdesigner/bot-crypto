@@ -23,3 +23,6 @@ Thumbs.db
 # Test files (optional, remove if you want to track them)
 # test_integration.py
 # test_strategy.py
+
+# Scratch/test scripts (local only)
+scratch/
