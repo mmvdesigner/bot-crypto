@@ -67,7 +67,9 @@ class TradingBot:
         for sig in (signal.SIGINT, signal.SIGTERM):
             try:
                 loop.add_signal_handler(sig, lambda: asyncio.create_task(self.stop()))
-            except NotImplementedError:
+            except (NotImplementedError, RuntimeError):
+                # RuntimeError acontece quando rodamos em thread nāo-principal
+                # (ex: background thread do dashboard no Render)
                 pass
 
         try:
