@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import os
@@ -52,33 +51,6 @@ if "page" not in st.session_state:
 #  Background services (bot + keepalive)
 # ---------------------------------------------------------------------------
 
-def _start_bot_in_background() -> None:
-    from src.main import TradingBot
-
-    async def _run() -> None:
-        bot = TradingBot()
-        await bot.run()
-
-    def _target() -> None:
-        restart_delay = 10
-        max_delay = 300
-        while True:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            try:
-                loop.run_until_complete(_run())
-                logger.info("Bot terminou normalmente")
-                break  # Saída limpa, não reiniciar
-            except Exception:
-                logger.exception("Bot thread morreu — reiniciando em %ds", restart_delay)
-                time.sleep(restart_delay)
-                restart_delay = min(restart_delay * 2, max_delay)
-
-    t = threading.Thread(target=_target, daemon=True, name="bot-thread")
-    t.start()
-    logger.info("Bot thread iniciada (com auto-restart)")
-
-
 def _start_keepalive() -> None:
     url = os.environ.get(
         "RENDER_EXTERNAL_URL",
@@ -101,7 +73,8 @@ def _start_keepalive() -> None:
 
 @st.cache_resource
 def _start_background_services() -> None:
-    _start_bot_in_background()
+    # Bot executa no VPS (fora dos EUA) — ver run_bot.py
+    # Esta instância do dashboard só faz keepalive e visualização
     _start_keepalive()
 
 
